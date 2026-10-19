@@ -68,6 +68,7 @@ const LOCALES = {
     messageFindANoteOrTag: "Find a note or #tag…",
     messageIndexingTags: "Indexing tags…",
     messageNoResults: "No results",
+    messageNoActiveConversation: "Open a Hermes conversation first: Vault View runs its file commands through the active session",
     messageTheShellRequestFailed: "The shell request failed",
     messageTheShellCommandFailed: "The shell command failed",
     messageTheCommandFailedWithExitCode: "The command failed with exit code ",
@@ -250,6 +251,7 @@ const LOCALES = {
     messageFindANoteOrTag: "Rechercher une note ou #tag…",
     messageIndexingTags: "Recherche des tags…",
     messageNoResults: "Aucun résultat",
+    messageNoActiveConversation: "Ouvrez d'abord une conversation Hermes : Vault View exécute ses commandes de fichiers via la session active",
     messageTheShellRequestFailed: "La requête shell a échoué",
     messageTheShellCommandFailed: "La commande shell a échoué",
     messageTheCommandFailedWithExitCode: "La commande a échoué avec le code ",
@@ -918,8 +920,29 @@ function readThemeColor(el, name, fallbackName) {
   return (style.getPropertyValue(name) || style.getPropertyValue(fallbackName) || style.color || '').trim()
 }
 
+function shellSessionId(state = host && host.state) {
+  const focused = readHostAtom(state && state.focusedSessionId, null)
+  const active = readHostAtom(state && state.activeSessionId, null)
+  return String(focused || active || '')
+}
+
+function isInvalidParamsError(error) {
+  const reason = error && (error.message || error.reason || (error.data && error.data.reason))
+  return String(reason || '') === 'invalid_params'
+}
+
 async function shellExec(command) {
-  const response = await host.request('shell.exec', { command: command })
+  const sessionId = shellSessionId()
+  let response
+  try {
+    // Hermes >= 0.22.1 runs shell.exec for one local session and requires its runtime id;
+    // earlier gateways refuse the session_id key, so the request is retried without it.
+    response = await host.request('shell.exec', sessionId ? { command: command, session_id: sessionId } : { command: command })
+  } catch (error) {
+    if (!isInvalidParamsError(error)) throw error
+    if (!sessionId) throw new Error(t('messageNoActiveConversation'))
+    response = await host.request('shell.exec', { command: command })
+  }
   const payload = response && response.result ? response.result : response
   if (response && response.error) throw new Error(t('messageTheShellRequestFailed'))
   if (payload && payload.error) throw new Error(t('messageTheShellCommandFailed'))
