@@ -1136,8 +1136,11 @@ async function readVaultFileBytes(path, isCancelled = function() { return false 
       binary = atob(encoded)
       if (binary.length !== expected) throw new Error('Invalid block size')
     } catch {
-      for (let part = 0; part < expected; part += 900) {
-        const length = Math.min(900, expected - part)
+      // 600-byte hex blocks: od -An -v -tx1 prints ~3.06 raw chars/byte on GNU (measured) and
+      // was reported at ~4.67 chars/byte on BSD od (macOS); 600 bytes stays under ~2,800 chars
+      // on either format, safely below the 4,000-char stdout tail shell.exec returns.
+      for (let part = 0; part < expected; part += 600) {
+        const length = Math.min(600, expected - part)
         const command = 'tail -c +' + (offset + part + 1) + ' ' + quotedPath + ' | head -c ' + length + ' | od -An -v -tx1'
         let hex = ''
         for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1367,10 +1370,19 @@ async function saveNoteFile(path, content) {
   // Base64 en voie principale : le contenu ne traverse plus l'interprétation du shell en
   // texte brut. C'est ce qui abîmait les séquences UTF-8 (un \xe2 perdu dans C'est faisait
   // échouer la relecture suivante avec TextDecoder en mode fatal).
-  const encoded = bytesToBase64(content)
+  const bytes = new TextEncoder().encode(content)
   const temporary = cleanPath + '.tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+  // Write in bounded chunks: Hermes scans each shell.exec command's text synchronously before
+  // running it, and scan time grows sharply with command length (measured ~1s/10KB up to
+  // ~90s/88KB, with commands over 128,000 chars refused outright). Matches the 2,400-byte
+  // chunk already proven for reads; a multiple of 3 so only the final chunk needs base64 padding.
+  const saveChunkBytes = 2400
   try {
-    await shellExec('printf %s ' + shellQuote(encoded) + ' | base64 -d > ' + shellQuote(temporary))
+    for (let offset = 0; offset === 0 || offset < bytes.length; offset += saveChunkBytes) {
+      const chunk = encodeBase64Bytes(bytes.subarray(offset, offset + saveChunkBytes))
+      const redirect = offset === 0 ? '> ' : '>> '
+      await shellExec('printf %s ' + shellQuote(chunk) + ' | base64 -d ' + redirect + shellQuote(temporary))
+    }
     // Écriture atomique : la note n'est jamais remplacée à moitié. On relit ce qu'on vient
     // d'écrire avant de basculer dessus, pour ne pas écraser une note saine avec du tronqué.
     const ecrit = getStdout(await shellExec('wc -c < ' + shellQuote(temporary))).trim()
